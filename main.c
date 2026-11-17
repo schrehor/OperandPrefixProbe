@@ -209,6 +209,44 @@ static BOOL VerifyEmittedBytes(BOOL prefixed, const char* probeName)
 	return TRUE;
 }
 
+static int RunProbe(BOOL prefixed)
+{
+	g_probeName = prefixed ? "prefixed probe" : "baseline probe";
+	AddVectoredExceptionHandler(1, RegionFaultHandler);
+
+	if (!BuildExperiment(prefixed, g_probeName))
+	{
+		return EXIT_SETUP;
+	}
+	if (!VerifyEmittedBytes(prefixed, g_probeName))
+	{
+		return EXIT_VERIFY;
+	}
+
+	printf("[+] %s: executing branch at %p (expected target %p)\n",
+		g_probeName,
+		(LPCVOID)g_region,
+		(LPCVOID)(g_region + g_targetOffset));
+	fflush(NULL);
+
+	typedef void (*BranchEntry)(void);
+	BranchEntry entry = (BranchEntry)g_region;
+	entry();
+
+	// Neither the landing stub nor the fault handler returned; control flow
+	// left the experiment in an unplanned way.
+	fprintf(stderr, "[-] %s: branch call returned - unrecorded control flow\n", g_probeName);
+	return EXIT_SETUP;
+}
+
+typedef struct ProbeResult
+{
+	const char* name;
+	BOOL prefixed;
+	DWORD exitCode;
+	BOOL timedOut;
+} ProbeResult;
+
 int main(void)
 {
 	printf("OperandPrefixProbe skeleton\n");

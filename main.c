@@ -94,6 +94,121 @@ static LONG CALLBACK RegionFaultHandler(PEXCEPTION_POINTERS exception)
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
+static BOOL BuildExperiment(BOOL prefixed, const char* probeName)
+{
+	g_region = (BYTE*)VirtualAlloc(NULL, REGION_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (g_region == NULL)
+	{
+		fprintf(stderr, "[-] %s: VirtualAlloc: E%lu\n", probeName, GetLastError());
+		return FALSE;
+	}
+	memset(g_region, 0xFF, REGION_SIZE);
+
+	DWORD branchLength = prefixed ? 6u : 5u;
+	DWORD displacement = BRANCH_DISPLACEMENT;
+	if (prefixed)
+	{
+		g_region[0] = 0x66;
+		g_region[1] = 0xE9;
+		memcpy(g_region + 2, &displacement, sizeof(displacement));
+	}
+	else
+	{
+		g_region[0] = 0xE9;
+		memcpy(g_region + 1, &displacement, sizeof(displacement));
+	}
+
+	g_targetOffset = (UINT_PTR)branchLength + BRANCH_DISPLACEMENT;
+	if (g_targetOffset + STUB_SIZE > REGION_SIZE)
+	{
+		fprintf(stderr, "[-] %s: layout does not fit the region\n", probeName);
+		return FALSE;
+	}
+
+	// Landing stub: mov rax, &RecordLandingThunk; jmp rax. The thunk is a
+	// heap-allocated trampoline that calls RecordLanding(probeName) so the
+	// stub bytes stay position-independent of the CRT.
+	BYTE* stub = g_region + g_targetOffset;
+	stub[0] = 0x48;
+	stub[1] = 0xB8;
+	UINT_PTR landing = (UINT_PTR)&RecordLandingThunk;
+	memcpy(stub + 2, &landing, sizeof(landing));
+	stub[10] = 0xFF;
+	stub[11] = 0xE0;
+
+	if (!FlushInstructionCache(GetCurrentProcess(), g_region, REGION_SIZE))
+	{
+		fprintf(stderr, "[-] %s: FlushInstructionCache: E%lu\n", probeName, GetLastError());
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static BOOL VerifyEmittedBytes(BOOL prefixed, const char* probeName)
+{
+	DWORD branchLength = prefixed ? 6u : 5u;
+	DWORD expectedOffset = prefixed ? 2u : 1u;
+	DWORD displacement = 0;
+
+	printf("[+] %s: emitted bytes at region+0:\n    ", probeName);
+	for (DWORD i = 0; i < 16; i++)
+	{
+		printf("%02X ", g_region[i]);
+	}
+	printf("\n");
+	printf("[+] %s: emitted bytes at region+0x%llX (landing stub):\n    ",
+		probeName, (unsigned long long)g_targetOffset);
+	for (UINT_PTR i = g_targetOffset; i < g_targetOffset + STUB_SIZE; i++)
+	{
+		printf("%02X ", g_region[i]);
+	}
+	printf("\n");
+
+	BOOL ok = TRUE;
+	if (prefixed && g_region[0] != 0x66)
+	{
+		ok = FALSE;
+	}
+	if (g_region[prefixed ? 1 : 0] != 0xE9)
+	{
+		ok = FALSE;
+	}
+	memcpy(&displacement, g_region + expectedOffset, sizeof(displacement));
+	if (displacement != BRANCH_DISPLACEMENT)
+	{
+		ok = FALSE;
+	}
+	if (g_region[g_targetOffset] != 0x48 || g_region[g_targetOffset + 1] != 0xB8 ||
+		g_region[g_targetOffset + 10] != 0xFF || g_region[g_targetOffset + 11] != 0xE0)
+	{
+		ok = FALSE;
+	}
+	for (UINT_PTR i = branchLength; i < g_targetOffset; i++)
+	{
+		if (g_region[i] != 0xFF)
+		{
+			ok = FALSE;
+			break;
+		}
+	}
+
+	if (!ok)
+	{
+		fprintf(stderr, "[-] %s: emitted-byte verification FAILED\n", probeName);
+		return FALSE;
+	}
+
+	printf("[+] %s: verification passed - branch %s rel32=0x%X from region+0, "
+		"filler 0xFF up to region+0x%llX, landing stub at region+0x%llX (branch end + 0x%X)\n",
+		probeName,
+		prefixed ? "66 E9" : "E9",
+		displacement,
+		(unsigned long long)g_targetOffset,
+		(unsigned long long)g_targetOffset,
+		BRANCH_DISPLACEMENT);
+	return TRUE;
+}
+
 int main(void)
 {
 	printf("OperandPrefixProbe skeleton\n");

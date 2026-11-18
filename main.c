@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 #define REGION_SIZE        0x11000u
 #define BRANCH_DISPLACEMENT 0x10000u
@@ -40,15 +41,15 @@
 #define EXIT_VERIFY  12
 #define EXIT_SETUP   13
 
-static BYTE* g_region = NULL;
-static UINT_PTR g_targetOffset = 0;
-static const char* g_probeName = "probe";
+static BYTE* gRegion = NULL;
+static UINT_PTR gTargetOffset = 0;
+static const char* gProbeName = "probe";
 
 static void RecordLanding(const char* probeName)
 {
 	printf("[+] %s: landing stub reached at region+0x%llX - branch displacement honored\n",
 		probeName,
-		(unsigned long long)g_targetOffset);
+		(unsigned long long)gTargetOffset);
 	fflush(NULL);
 	ExitProcess(EXIT_LANDING);
 }
@@ -56,7 +57,7 @@ static void RecordLanding(const char* probeName)
 // Target of the machine-generated landing stub (mov rax, <abs>; jmp rax).
 static void RecordLandingThunk(void)
 {
-	RecordLanding(g_probeName);
+	RecordLanding(gProbeName);
 }
 
 static LONG CALLBACK RegionFaultHandler(PEXCEPTION_POINTERS exception)
@@ -72,16 +73,16 @@ static LONG CALLBACK RegionFaultHandler(PEXCEPTION_POINTERS exception)
 	{
 		return EXCEPTION_CONTINUE_SEARCH;
 	}
-	if (g_region == NULL || address < (UINT_PTR)g_region || address >= (UINT_PTR)g_region + REGION_SIZE)
+	if (gRegion == NULL || address < (UINT_PTR)gRegion || address >= (UINT_PTR)gRegion + REGION_SIZE)
 	{
 		return EXCEPTION_CONTINUE_SEARCH;
 	}
 
-	UINT_PTR offset = address - (UINT_PTR)g_region;
+	UINT_PTR offset = address - (UINT_PTR)gRegion;
 	printf("[-] Fault inside experiment region: code 0x%08lX at region+0x%llX\n",
 		(unsigned long)code,
 		(unsigned long long)offset);
-	if (offset < g_targetOffset)
+	if (offset < gTargetOffset)
 	{
 		printf("[-] Fault landed in the 0xFF filler - the branch did NOT reach the intended target\n");
 	}
@@ -96,39 +97,39 @@ static LONG CALLBACK RegionFaultHandler(PEXCEPTION_POINTERS exception)
 
 static BOOL BuildExperiment(BOOL prefixed, const char* probeName)
 {
-	g_region = (BYTE*)VirtualAlloc(NULL, REGION_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-	if (g_region == NULL)
+	gRegion = (BYTE*)VirtualAlloc(NULL, REGION_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (gRegion == NULL)
 	{
 		fprintf(stderr, "[-] %s: VirtualAlloc: E%lu\n", probeName, GetLastError());
 		return FALSE;
 	}
-	memset(g_region, 0xFF, REGION_SIZE);
+	memset(gRegion, 0xFF, REGION_SIZE);
 
 	DWORD branchLength = prefixed ? 6u : 5u;
 	DWORD displacement = BRANCH_DISPLACEMENT;
 	if (prefixed)
 	{
-		g_region[0] = 0x66;
-		g_region[1] = 0xE9;
-		memcpy(g_region + 2, &displacement, sizeof(displacement));
+		gRegion[0] = 0x66;
+		gRegion[1] = 0xE9;
+		memcpy(gRegion + 2, &displacement, sizeof(displacement));
 	}
 	else
 	{
-		g_region[0] = 0xE9;
-		memcpy(g_region + 1, &displacement, sizeof(displacement));
+		gRegion[0] = 0xE9;
+		memcpy(gRegion + 1, &displacement, sizeof(displacement));
 	}
 
-	g_targetOffset = (UINT_PTR)branchLength + BRANCH_DISPLACEMENT;
-	if (g_targetOffset + STUB_SIZE > REGION_SIZE)
+	gTargetOffset = (UINT_PTR)branchLength + BRANCH_DISPLACEMENT;
+	if (gTargetOffset + STUB_SIZE > REGION_SIZE)
 	{
 		fprintf(stderr, "[-] %s: layout does not fit the region\n", probeName);
 		return FALSE;
 	}
 
 	// Landing stub: mov rax, &RecordLandingThunk; jmp rax. The thunk is a
-	// heap-allocated trampoline that calls RecordLanding(probeName) so the
-	// stub bytes stay position-independent of the CRT.
-	BYTE* stub = g_region + g_targetOffset;
+	// compiled static function that calls RecordLanding with the selected
+	// probe name.
+	BYTE* stub = gRegion + gTargetOffset;
 	stub[0] = 0x48;
 	stub[1] = 0xB8;
 	UINT_PTR landing = (UINT_PTR)&RecordLandingThunk;
@@ -136,7 +137,7 @@ static BOOL BuildExperiment(BOOL prefixed, const char* probeName)
 	stub[10] = 0xFF;
 	stub[11] = 0xE0;
 
-	if (!FlushInstructionCache(GetCurrentProcess(), g_region, REGION_SIZE))
+	if (!FlushInstructionCache(GetCurrentProcess(), gRegion, REGION_SIZE))
 	{
 		fprintf(stderr, "[-] %s: FlushInstructionCache: E%lu\n", probeName, GetLastError());
 		return FALSE;
@@ -153,39 +154,39 @@ static BOOL VerifyEmittedBytes(BOOL prefixed, const char* probeName)
 	printf("[+] %s: emitted bytes at region+0:\n    ", probeName);
 	for (DWORD i = 0; i < 16; i++)
 	{
-		printf("%02X ", g_region[i]);
+		printf("%02X ", gRegion[i]);
 	}
 	printf("\n");
 	printf("[+] %s: emitted bytes at region+0x%llX (landing stub):\n    ",
-		probeName, (unsigned long long)g_targetOffset);
-	for (UINT_PTR i = g_targetOffset; i < g_targetOffset + STUB_SIZE; i++)
+		probeName, (unsigned long long)gTargetOffset);
+	for (UINT_PTR i = gTargetOffset; i < gTargetOffset + STUB_SIZE; i++)
 	{
-		printf("%02X ", g_region[i]);
+		printf("%02X ", gRegion[i]);
 	}
 	printf("\n");
 
 	BOOL ok = TRUE;
-	if (prefixed && g_region[0] != 0x66)
+	if (prefixed && gRegion[0] != 0x66)
 	{
 		ok = FALSE;
 	}
-	if (g_region[prefixed ? 1 : 0] != 0xE9)
+	if (gRegion[prefixed ? 1 : 0] != 0xE9)
 	{
 		ok = FALSE;
 	}
-	memcpy(&displacement, g_region + expectedOffset, sizeof(displacement));
+	memcpy(&displacement, gRegion + expectedOffset, sizeof(displacement));
 	if (displacement != BRANCH_DISPLACEMENT)
 	{
 		ok = FALSE;
 	}
-	if (g_region[g_targetOffset] != 0x48 || g_region[g_targetOffset + 1] != 0xB8 ||
-		g_region[g_targetOffset + 10] != 0xFF || g_region[g_targetOffset + 11] != 0xE0)
+	if (gRegion[gTargetOffset] != 0x48 || gRegion[gTargetOffset + 1] != 0xB8 ||
+		gRegion[gTargetOffset + 10] != 0xFF || gRegion[gTargetOffset + 11] != 0xE0)
 	{
 		ok = FALSE;
 	}
-	for (UINT_PTR i = branchLength; i < g_targetOffset; i++)
+	for (UINT_PTR i = branchLength; i < gTargetOffset; i++)
 	{
-		if (g_region[i] != 0xFF)
+		if (gRegion[i] != 0xFF)
 		{
 			ok = FALSE;
 			break;
@@ -203,51 +204,51 @@ static BOOL VerifyEmittedBytes(BOOL prefixed, const char* probeName)
 		probeName,
 		prefixed ? "66 E9" : "E9",
 		displacement,
-		(unsigned long long)g_targetOffset,
-		(unsigned long long)g_targetOffset,
+		(unsigned long long)gTargetOffset,
+		(unsigned long long)gTargetOffset,
 		BRANCH_DISPLACEMENT);
 	return TRUE;
 }
 
 static int RunProbe(BOOL prefixed)
 {
-	g_probeName = prefixed ? "prefixed probe" : "baseline probe";
+	gProbeName = prefixed ? "prefixed probe" : "baseline probe";
 	AddVectoredExceptionHandler(1, RegionFaultHandler);
 
-	if (!BuildExperiment(prefixed, g_probeName))
+	if (!BuildExperiment(prefixed, gProbeName))
 	{
 		return EXIT_SETUP;
 	}
-	if (!VerifyEmittedBytes(prefixed, g_probeName))
+	if (!VerifyEmittedBytes(prefixed, gProbeName))
 	{
 		return EXIT_VERIFY;
 	}
 
 	printf("[+] %s: executing branch at %p (expected target %p)\n",
-		g_probeName,
-		(LPCVOID)g_region,
-		(LPCVOID)(g_region + g_targetOffset));
+		gProbeName,
+		(LPCVOID)gRegion,
+		(LPCVOID)(gRegion + gTargetOffset));
 	fflush(NULL);
 
-	typedef void (*BranchEntry)(void);
-	BranchEntry entry = (BranchEntry)g_region;
+	typedef void (*BRANCH_ENTRY)(void);
+	BRANCH_ENTRY entry = (BRANCH_ENTRY)gRegion;
 	entry();
 
 	// Neither the landing stub nor the fault handler returned; control flow
 	// left the experiment in an unplanned way.
-	fprintf(stderr, "[-] %s: branch call returned - unrecorded control flow\n", g_probeName);
+	fprintf(stderr, "[-] %s: branch call returned - unrecorded control flow\n", gProbeName);
 	return EXIT_SETUP;
 }
 
-typedef struct ProbeResult
+typedef struct
 {
 	const char* name;
 	BOOL prefixed;
 	DWORD exitCode;
 	BOOL timedOut;
-} ProbeResult;
+} PROBE_RESULT;
 
-static BOOL RunChildProbe(const ProbeResult* template, WCHAR* selfPath, ProbeResult* result)
+static BOOL RunChildProbe(const PROBE_RESULT* template, WCHAR* selfPath, PROBE_RESULT* result)
 {
 	WCHAR commandLine[512];
 	_snwprintf_s(commandLine, _countof(commandLine), _TRUNCATE,
@@ -308,7 +309,7 @@ static BOOL RunChildProbe(const ProbeResult* template, WCHAR* selfPath, ProbeRes
 	return TRUE;
 }
 
-static void ClassifyResult(const ProbeResult* result)
+static void ClassifyResult(const PROBE_RESULT* result)
 {
 	if (result->timedOut)
 	{
@@ -337,25 +338,25 @@ static void ClassifyResult(const ProbeResult* result)
 	}
 }
 
-int main(int argc, char* argv[])
+int wmain(int argc, wchar_t* argv[])
 {
-	if (argc == 3 && strcmp(argv[1], "--probe") == 0)
+	if (argc == 3 && wcscmp(argv[1], L"--probe") == 0)
 	{
-		if (strcmp(argv[2], "prefixed") == 0)
+		if (wcscmp(argv[2], L"prefixed") == 0)
 		{
 			return RunProbe(TRUE);
 		}
-		if (strcmp(argv[2], "baseline") == 0)
+		if (wcscmp(argv[2], L"baseline") == 0)
 		{
 			return RunProbe(FALSE);
 		}
-		fprintf(stderr, "Usage: %s --probe prefixed|baseline\n", argv[0]);
+		fprintf(stderr, "Usage: %ls --probe prefixed|baseline\n", argv[0]);
 		return EXIT_SETUP;
 	}
 	if (argc != 1)
 	{
-		fprintf(stderr, "Usage: %s            (run both probes in isolated children)\n", argv[0]);
-		fprintf(stderr, "       %s --probe prefixed|baseline   (child mode)\n", argv[0]);
+		fprintf(stderr, "Usage: %ls            (run both probes in isolated children)\n", argv[0]);
+		fprintf(stderr, "       %ls --probe prefixed|baseline   (child mode)\n", argv[0]);
 		return EXIT_SETUP;
 	}
 
@@ -369,7 +370,7 @@ int main(int argc, char* argv[])
 	printf("OperandPrefixProbe - operand-size-prefixed relative-branch experiment\n");
 	printf("Host: Windows x64. Results apply only to this CPU/environment.\n\n");
 
-	ProbeResult probes[2] = { 0 };
+	PROBE_RESULT probes[2] = { 0 };
 	probes[0].name = "baseline";
 	probes[0].prefixed = FALSE;
 	probes[1].name = "prefixed";

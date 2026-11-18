@@ -11,9 +11,9 @@
 //                              (mov rax, RecordLanding; jmp rax)
 //
 // The displacement 0x00010000 and the filler byte 0xFF match the reference
-// exactly; only the placement is made deterministic. On documented Intel/AMD
-// x86-64 behavior the 66h prefix is ignored for JMP rel32, so both probes
-// should reach the landing stub. The probe RECORDS the observed destination
+// exactly; only the placement is made deterministic. Both probes reached the
+// landing stub on the tested Intel host; other processors were not tested.
+// The probe RECORDS the observed destination
 // or fault; it never claims the outcome identifies a VM or a CPU vendor.
 //
 // Child exit codes:

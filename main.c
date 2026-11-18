@@ -247,6 +247,67 @@ typedef struct ProbeResult
 	BOOL timedOut;
 } ProbeResult;
 
+static BOOL RunChildProbe(const ProbeResult* template, WCHAR* selfPath, ProbeResult* result)
+{
+	WCHAR commandLine[512];
+	_snwprintf_s(commandLine, _countof(commandLine), _TRUNCATE,
+		L"\"%ls\" --probe %hs", selfPath, template->name);
+
+	SECURITY_ATTRIBUTES pipeAttributes = { sizeof(pipeAttributes), NULL, TRUE };
+	HANDLE readPipe = NULL;
+	HANDLE writePipe = NULL;
+	if (!CreatePipe(&readPipe, &writePipe, &pipeAttributes, 0))
+	{
+		fprintf(stderr, "[-] CreatePipe: E%lu\n", GetLastError());
+		return FALSE;
+	}
+	SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+	STARTUPINFOW startup = { sizeof(startup) };
+	startup.dwFlags = STARTF_USESTDHANDLES;
+	startup.hStdOutput = writePipe;
+	startup.hStdError = writePipe;
+	startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+	PROCESS_INFORMATION process = { 0 };
+	BOOL created = CreateProcessW(selfPath, commandLine, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &process);
+	CloseHandle(writePipe);
+	if (!created)
+	{
+		fprintf(stderr, "[-] CreateProcessW(%ls): E%lu\n", commandLine, GetLastError());
+		CloseHandle(readPipe);
+		return FALSE;
+	}
+
+	DWORD wait = WaitForSingleObject(process.hProcess, PROBE_TIMEOUT_MS);
+	result->timedOut = wait == WAIT_TIMEOUT;
+	if (result->timedOut)
+	{
+		TerminateProcess(process.hProcess, 1);
+		WaitForSingleObject(process.hProcess, 5000);
+		result->exitCode = 1;
+	}
+	else
+	{
+		GetExitCodeProcess(process.hProcess, &result->exitCode);
+	}
+
+	char buffer[1024];
+	DWORD bytesRead = 0;
+	printf("--- %hs child output ---\n", template->name);
+	while (ReadFile(readPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0)
+	{
+		buffer[bytesRead] = '\0';
+		fputs(buffer, stdout);
+	}
+	printf("--- end of %hs child output ---\n", template->name);
+
+	CloseHandle(readPipe);
+	CloseHandle(process.hProcess);
+	CloseHandle(process.hThread);
+	return TRUE;
+}
+
 int main(void)
 {
 	printf("OperandPrefixProbe skeleton\n");

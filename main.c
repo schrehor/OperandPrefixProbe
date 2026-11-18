@@ -308,8 +308,87 @@ static BOOL RunChildProbe(const ProbeResult* template, WCHAR* selfPath, ProbeRes
 	return TRUE;
 }
 
-int main(void)
+static void ClassifyResult(const ProbeResult* result)
 {
-	printf("OperandPrefixProbe skeleton\n");
-	return 0;
+	if (result->timedOut)
+	{
+		printf("[=] %hs: TIMEOUT - child exceeded %lu ms and was terminated (unbounded hang recorded)\n",
+			result->name, PROBE_TIMEOUT_MS);
+		return;
+	}
+	switch (result->exitCode)
+	{
+		case EXIT_LANDING:
+			printf("[=] %hs: OBSERVED - branch reached the landing stub (displacement honored)\n", result->name);
+			break;
+		case EXIT_FAULT:
+			printf("[=] %hs: OBSERVED - fault inside the experiment region (offset recorded above)\n", result->name);
+			break;
+		case EXIT_VERIFY:
+			printf("[=] %hs: INVALID - emitted-byte verification failed; no branch was executed\n", result->name);
+			break;
+		case EXIT_SETUP:
+			printf("[=] %hs: INVALID - probe setup failed; no branch was executed\n", result->name);
+			break;
+		default:
+			printf("[=] %hs: UNEXPECTED - child exit code 0x%08lX (crash outside the recorded region or other failure)\n",
+				result->name, (unsigned long)result->exitCode);
+			break;
+	}
+}
+
+int main(int argc, char* argv[])
+{
+	if (argc == 3 && strcmp(argv[1], "--probe") == 0)
+	{
+		if (strcmp(argv[2], "prefixed") == 0)
+		{
+			return RunProbe(TRUE);
+		}
+		if (strcmp(argv[2], "baseline") == 0)
+		{
+			return RunProbe(FALSE);
+		}
+		fprintf(stderr, "Usage: %s --probe prefixed|baseline\n", argv[0]);
+		return EXIT_SETUP;
+	}
+	if (argc != 1)
+	{
+		fprintf(stderr, "Usage: %s            (run both probes in isolated children)\n", argv[0]);
+		fprintf(stderr, "       %s --probe prefixed|baseline   (child mode)\n", argv[0]);
+		return EXIT_SETUP;
+	}
+
+	WCHAR selfPath[MAX_PATH] = { 0 };
+	if (GetModuleFileNameW(NULL, selfPath, MAX_PATH) == 0)
+	{
+		fprintf(stderr, "[-] GetModuleFileNameW: E%lu\n", GetLastError());
+		return EXIT_SETUP;
+	}
+
+	printf("OperandPrefixProbe - operand-size-prefixed relative-branch experiment\n");
+	printf("Host: Windows x64. Results apply only to this CPU/environment.\n\n");
+
+	ProbeResult probes[2] = { 0 };
+	probes[0].name = "baseline";
+	probes[0].prefixed = FALSE;
+	probes[1].name = "prefixed";
+	probes[1].prefixed = TRUE;
+
+	for (int i = 0; i < 2; i++)
+	{
+		if (!RunChildProbe(&probes[i], selfPath, &probes[i]))
+		{
+			return EXIT_SETUP;
+		}
+		ClassifyResult(&probes[i]);
+		printf("\n");
+	}
+
+	printf("Summary: baseline exit 0x%02lX%s, prefixed exit 0x%02lX%s.\n",
+		(unsigned long)probes[0].exitCode, probes[0].timedOut ? " (timeout)" : "",
+		(unsigned long)probes[1].exitCode, probes[1].timedOut ? " (timeout)" : "");
+	printf("This is an observation record only. It does not identify a VM, a hypervisor\n");
+	printf("or a CPU vendor; any such claim would need separate cross-vendor evidence.\n");
+	return EXIT_SUCCESS;
 }
